@@ -80,7 +80,7 @@ class AnalyzerEngine {
         ? atrSeries.sublist(max(0, atrSeries.length - 20)).reduce((a, b) => a + b) /
             min(20, atrSeries.length)
         : atr;
-    final adx = _calculateAdx(candles, 14);
+    final adx = _calculateAdxWilder(candles, 14);
 
     // Deteksi SNR (Swing High & Swing Low 25 candle terakhir)
     final window = candles.sublist(max(0, candles.length - 25));
@@ -175,7 +175,7 @@ class AnalyzerEngine {
     // --- KONDISI BUY ---
     if (isBullishTrend && (nearDemand || nearSupport)) {
       reasons.add('Tren naik valid: EMA 50 > EMA 200 dan harga di atas EMA 200.');
-      reasons.add('ADX ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.');
+      reasons.add('ADX (Wilder) ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.');
       if (nearDemand) {
         reasons.add('Harga berada di area Demand Zone SND (${demandLow!.toStringAsFixed(2)} - ${demandHigh!.toStringAsFixed(2)}).');
       }
@@ -218,7 +218,7 @@ class AnalyzerEngine {
     // --- KONDISI SELL ---
     if (isBearishTrend && (nearSupply || nearResistance)) {
       reasons.add('Tren turun valid: EMA 50 < EMA 200 dan harga di bawah EMA 200.');
-      reasons.add('ADX ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.');
+      reasons.add('ADX (Wilder) ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.');
       if (nearSupply) {
         reasons.add('Harga berada di area Supply Zone SND (${supplyLow!.toStringAsFixed(2)} - ${supplyHigh!.toStringAsFixed(2)}).');
       }
@@ -345,9 +345,13 @@ class AnalyzerEngine {
     return atrList;
   }
 
-  static double _calculateAdx(List<Candle> candles, int period) {
-    if (candles.length < period + 2) return 25.0;
-    final dxList = <double>[];
+  // Perhitungan ADX gaya Wilder (lebih selaras dengan ADX MT5)
+  static double _calculateAdxWilder(List<Candle> candles, int period) {
+    if (candles.length < (period * 2) + 1) return 25.0;
+
+    final trList = <double>[];
+    final plusDmList = <double>[];
+    final minusDmList = <double>[];
 
     for (int i = 1; i < candles.length; i++) {
       final curr = candles[i];
@@ -364,18 +368,46 @@ class AnalyzerEngine {
         max((curr.high - prev.close).abs(), (curr.low - prev.close).abs()),
       );
 
-      if (tr > 0) {
-        final plusDi = 100 * (plusDm / tr);
-        final minusDi = 100 * (minusDm / tr);
-        final sumDi = plusDi + minusDi;
-        if (sumDi > 0) {
-          dxList.add(100 * ((plusDi - minusDi).abs() / sumDi));
-        }
-      }
+      trList.add(tr);
+      plusDmList.add(plusDm);
+      minusDmList.add(minusDm);
     }
 
-    if (dxList.isEmpty) return 25.0;
-    final recentDx = dxList.sublist(max(0, dxList.length - period));
-    return recentDx.reduce((a, b) => a + b) / recentDx.length;
+    // Smoothing awal (jumlah `period` pertama ala Wilder)
+    double smoothTr = trList.sublist(0, period).reduce((a, b) => a + b);
+    double smoothPlusDm = plusDmList.sublist(0, period).reduce((a, b) => a + b);
+    double smoothMinusDm = minusDmList.sublist(0, period).reduce((a, b) => a + b);
+
+    final dxList = <double>[];
+
+    double calcDx(double tr, double pDm, double mDm) {
+      if (tr <= 0) return 0.0;
+      final plusDi = 100.0 * (pDm / tr);
+      final minusDi = 100.0 * (mDm / tr);
+      final sumDi = plusDi + minusDi;
+      if (sumDi <= 0) return 0.0;
+      return 100.0 * ((plusDi - minusDi).abs() / sumDi);
+    }
+
+    dxList.add(calcDx(smoothTr, smoothPlusDm, smoothMinusDm));
+
+    for (int i = period; i < trList.length; i++) {
+      smoothTr = smoothTr - (smoothTr / period) + trList[i];
+      smoothPlusDm = smoothPlusDm - (smoothPlusDm / period) + plusDmList[i];
+      smoothMinusDm = smoothMinusDm - (smoothMinusDm / period) + minusDmList[i];
+      dxList.add(calcDx(smoothTr, smoothPlusDm, smoothMinusDm));
+    }
+
+    if (dxList.length < period) {
+      return dxList.reduce((a, b) => a + b) / dxList.length;
+    }
+
+    // ADX awal = rata-rata `period` nilai DX pertama, lalu di-smoothing Wilder
+    double adx = dxList.sublist(0, period).reduce((a, b) => a + b) / period;
+    for (int i = period; i < dxList.length; i++) {
+      adx = ((adx * (period - 1)) + dxList[i]) / period;
+    }
+
+    return adx;
   }
 }
