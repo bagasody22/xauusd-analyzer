@@ -47,6 +47,10 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
   String? _errorMessage;
   AnalysisResult? _result;
   ScalpResult? _scalpResult;
+  double? _lastScalpEma50;
+  double? _lastScalpEma200;
+  double? _lastScalpAdx;
+  double? _lastScalpAtr;
   String _lastUpdated = '-';
 
   @override
@@ -100,8 +104,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
         .map((item) => Candle.fromJson(item as Map<String, dynamic>))
         .toList();
   }
-
-  List<Candle> _chronologicalCandles(List<Candle> raw) {
+    List<Candle> _chronologicalCandles(List<Candle> raw) {
     if (raw.length < 2) return raw;
     return raw.reversed.toList();
   }
@@ -197,6 +200,56 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
     }
     return adx;
   }
+
+  List<String> _buildScalpReasons(ScalpResult res) {
+    final ema50 = _lastScalpEma50 ?? 0;
+    final ema200 = _lastScalpEma200 ?? 0;
+    final adx = _lastScalpAdx ?? 0;
+    final atr = _lastScalpAtr ?? 0;
+    final price = res.currentPrice;
+
+    final list = <String>[res.reason];
+
+    if (ema50 > ema200) {
+      list.add(
+        'Struktur EMA jangka pendek bullish: EMA 50 (${ema50.toStringAsFixed(2)}) > EMA 200 (${ema200.toStringAsFixed(2)}).',
+      );
+    } else if (ema50 < ema200) {
+      list.add(
+        'Struktur EMA jangka pendek bearish: EMA 50 (${ema50.toStringAsFixed(2)}) < EMA 200 (${ema200.toStringAsFixed(2)}).',
+      );
+    } else {
+      list.add('EMA 50 dan EMA 200 berada di level yang berdekatan.');
+    }
+
+    if (price > ema50) {
+      list.add('Harga (${price.toStringAsFixed(2)}) berada di atas EMA 50.');
+    } else if (price < ema50) {
+      list.add('Harga (${price.toStringAsFixed(2)}) berada di bawah EMA 50.');
+    }
+
+    if (adx >= 25.0) {
+      list.add(
+        'ADX (Wilder) ${adx.toStringAsFixed(1)} (>= 25.0): momentum tren cukup kuat.',
+      );
+    } else {
+      list.add(
+        'ADX (Wilder) ${adx.toStringAsFixed(1)} (< 25.0): momentum tren belum mencapai batas minimal 25.0.',
+      );
+    }
+
+    if (res.signal != ScalpSignal.noEntry &&
+        res.stopLoss != null &&
+        res.takeProfit != null) {
+      final slDist = (price - res.stopLoss!).abs().toStringAsFixed(2);
+      final tpDist = (res.takeProfit! - price).abs().toStringAsFixed(2);
+      list.add(
+        'Risiko SL $slDist poin dengan target TP $tpDist poin (rasio RR 1:2, ATR ${atr.toStringAsFixed(2)}).',
+      );
+    }
+
+    return list;
+  }
     Future<void> _runAnalysis() async {
     final apiKey = _apiKeyController.text.trim();
     if (apiKey.isEmpty) {
@@ -238,6 +291,10 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
 
         setState(() {
           _scalpResult = scalpEval;
+          _lastScalpEma50 = ema50;
+          _lastScalpEma200 = ema200;
+          _lastScalpAdx = adx;
+          _lastScalpAtr = atr;
           _result = null;
           _lastUpdated = _formatNow();
         });
@@ -255,6 +312,10 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
       setState(() {
         _result = analysis;
         _scalpResult = null;
+        _lastScalpEma50 = null;
+        _lastScalpEma200 = null;
+        _lastScalpAdx = null;
+        _lastScalpAtr = null;
         _lastUpdated = _formatNow();
       });
     } catch (e) {
@@ -543,6 +604,50 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                         _scalpResult!.reason,
                         textAlign: TextAlign.center,
                         style: const TextStyle(color: Colors.white70, height: 1.35),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 12),
+              Card(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Penjelasan Hasil Analisis',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      const SizedBox(height: 8),
+                      ..._buildScalpReasons(_scalpResult!).map(
+                        (r) => Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('• ', style: TextStyle(color: Color(0xFFF5B82E))),
+                              Expanded(
+                                child: Text(r, style: const TextStyle(height: 1.35)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const Divider(height: 24),
+                      const Text(
+                        'Data Teknis (EMA / ADX / ATR)',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '• EMA 50: ${(_lastScalpEma50 ?? 0).toStringAsFixed(2)} | EMA 200: ${(_lastScalpEma200 ?? 0).toStringAsFixed(2)}',
+                      ),
+                      Text(
+                        '• ADX (Kekuatan Tren): ${(_lastScalpAdx ?? 0).toStringAsFixed(1)} | ATR: ${(_lastScalpAtr ?? 0).toStringAsFixed(2)}',
                       ),
                     ],
                   ),
