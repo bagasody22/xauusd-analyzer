@@ -5,12 +5,14 @@ enum TradingMode { scalping, hold }
 enum SignalDecision { buy, sell, noTrade }
 
 class Candle {
+  final DateTime time;
   final double open;
   final double high;
   final double low;
   final double close;
 
   Candle({
+    required this.time,
     required this.open,
     required this.high,
     required this.low,
@@ -19,10 +21,11 @@ class Candle {
 
   factory Candle.fromJson(Map<String, dynamic> json) {
     return Candle(
-      open: double.parse(json['open'].toString()),
-      high: double.parse(json['high'].toString()),
-      low: double.parse(json['low'].toString()),
-      close: double.parse(json['close'].toString()),
+      time: DateTime.parse(json['datetime'] as String),
+      open: double.parse(json['open'] as String),
+      high: double.parse(json['high'] as String),
+      low: double.parse(json['low'] as String),
+      close: double.parse(json['close'] as String),
     );
   }
 }
@@ -48,10 +51,10 @@ class AnalysisResult {
     required this.decision,
     required this.decisionLabel,
     required this.currentPrice,
-    required this.entryPrice,
-    required this.stopLoss,
-    required this.tp1,
-    required this.tp2,
+    this.entryPrice,
+    this.stopLoss,
+    this.tp1,
+    this.tp2,
     required this.ema50,
     required this.ema200,
     required this.adx,
@@ -64,66 +67,165 @@ class AnalysisResult {
 }
 
 class AnalyzerEngine {
-  static AnalysisResult analyze({
+  static double _calculateEMA(List<double> values, int period) {
+    if (values.isEmpty) return 0;
+    if (values.length < period) {
+      return values.reduce((a, b) => a + b) / values.length;
+    }
+    final multiplier = 2.0 / (period + 1);
+    double ema = values.sublist(0, period).reduce((a, b) => a + b) / period;
+    for (int i = period; i < values.length; i++) {
+      ema = ((values[i] - ema) * multiplier) + ema;
+    }
+    return ema;
+  }
+
+  static List<double> _calculateTR(List<Candle> candles) {
+    final List<double> trList = [];
+    for (int i = 1; i < candles.length; i++) {
+      final high = candles[i].high;
+      final low = candles[i].low;
+      final prevClose = candles[i - 1].close;
+      final tr = max(
+        high - low,
+        max((high - prevClose).abs(), (low - prevClose).abs()),
+      );
+      trList.add(tr);
+    }
+    return trList;
+  }
+
+  static double _calculateATR(List<Candle> candles, int period) {
+    final trList = _calculateTR(candles);
+    if (trList.isEmpty) return 0;
+    if (trList.length < period) {
+      return trList.reduce((a, b) => a + b) / trList.length;
+    }
+    double atr = trList.sublist(0, period).reduce((a, b) => a + b) / period;
+    for (int i = period; i < trList.length; i++) {
+      atr = ((atr * (period - 1)) + trList[i]) / period;
+    }
+    return atr;
+  }
+
+  static double _calculateADXWilder(List<Candle> candles, int period) {
+    if (candles.length <= period + 1) return 0;
+
+    final List<double> plusDM = [];
+    final List<double> minusDM = [];
+    final List<double> trList = [];
+
+    for (int i = 1; i < candles.length; i++) {
+      final upMove = candles[i].high - candles[i - 1].high;
+      final downMove = candles[i - 1].low - candles[i].low;
+
+      plusDM.add((upMove > downMove && upMove > 0) ? upMove : 0);
+      minusDM.add((downMove > upMove && downMove > 0) ? downMove : 0);
+
+      final tr = max(
+        candles[i].high - candles[i].low,
+        max(
+          (candles[i].high - candles[i - 1].close).abs(),
+          (candles[i].low - candles[i - 1].close).abs(),
+        ),
+      );
+      trList.add(tr);
+    }
+
+    double smoothTR = trList.sublist(0, period).reduce((a, b) => a + b);
+    double smoothPlusDM = plusDM.sublist(0, period).reduce((a, b) => a + b);
+    double smoothMinusDM = minusDM.sublist(0, period).reduce((a, b) => a + b);
+
+    final List<double> dxList = [];
+    for (int i = period; i < trList.length; i++) {
+      smoothTR = smoothTR - (smoothTR / period) + trList[i];
+      smoothPlusDM = smoothPlusDM - (smoothPlusDM / period) + plusDM[i];
+      smoothMinusDM = smoothMinusDM - (smoothMinusDM / period) + minusDM[i];
+
+      if (smoothTR == 0) continue;
+      final plusDI = (smoothPlusDM / smoothTR) * 100;
+      final minusDI = (smoothMinusDM / smoothTR) * 100;
+      final diSum = plusDI + minusDI;
+      if (diSum > 0) {
+        dxList.add(((plusDI - minusDI).abs() / diSum) * 100);
+      }
+    }
+
+    if (dxList.isEmpty) return 0;
+    if (dxList.length < period) {
+      return dxList.reduce((a, b) => a + b) / dxList.length;
+    }
+
+    double adx = dxList.sublist(0, period).reduce((a, b) => a + b) / period;
+    for (int i = period; i < dxList.length; i++) {
+      adx = ((adx * (period - 1)) + dxList[i]) / period;
+    }
+    return adx;
+  }
+    static AnalysisResult analyze({
     required List<Candle> rawCandles,
     required TradingMode mode,
   }) {
     final candles = rawCandles.reversed.toList();
-    final currentPrice = candles.last.close;
     final closes = candles.map((c) => c.close).toList();
+    final currentPrice = closes.last;
 
-    final ema50 = _calculateEma(closes, 50);
-    final ema200 = _calculateEma(closes, 200);
-    final atrSeries = _calculateAtrSeries(candles, 14);
-    final atr = atrSeries.isNotEmpty ? atrSeries.last : 1.0;
-    final avgAtr = atrSeries.isNotEmpty
-        ? atrSeries.sublist(max(0, atrSeries.length - 20)).reduce((a, b) => a + b) /
-            min(20, atrSeries.length)
-        : atr;
-    final adx = _calculateAdxWilder(candles, 14);
+    final ema50 = _calculateEMA(closes, 50);
+    final ema200 = _calculateEMA(closes, 200);
+    final adx = _calculateADXWilder(candles, 14);
+    final atr = _calculateATR(candles, 14);
 
-    // Deteksi SNR (Swing High & Swing Low 25 candle terakhir)
-    final window = candles.sublist(max(0, candles.length - 25));
-    double swingHigh = window.first.high;
-    double swingLow = window.first.low;
-    for (final c in window) {
+    // 1. Deteksi SNR (Swing High & Swing Low 25 candle terakhir)
+    final snrWindow = candles.sublist(max(0, candles.length - 25));
+    double swingHigh = snrWindow.first.high;
+    double swingLow = snrWindow.first.low;
+    for (final c in snrWindow) {
       if (c.high > swingHigh) swingHigh = c.high;
       if (c.low < swingLow) swingLow = c.low;
     }
 
-    // Deteksi SND (Candle impulsif di 25 candle terakhir)
+    // 2. Deteksi SnD (Base candle sebelum gerakan impulsif kuat)
     double? demandLow;
     double? demandHigh;
     double? supplyLow;
     double? supplyHigh;
 
-    for (int i = 1; i < window.length - 1; i++) {
-      final prev = window[i - 1];
-      final curr = window[i];
+    final recentTr = _calculateTR(candles);
+    final avgAtr = recentTr.isEmpty
+        ? atr
+        : recentTr.sublist(max(0, recentTr.length - 20)).reduce((a, b) => a + b) /
+            min(20, recentTr.length);
+
+    for (int i = max(1, candles.length - 25); i < candles.length - 1; i++) {
+      final prev = candles[i - 1];
+      final curr = candles[i];
       final body = (curr.close - curr.open).abs();
 
-      // Dorongan naik kuat -> area sebelum candle impulsif jadi Demand Zone
-      if (curr.close > curr.open && body > avgAtr * 1.3) {
+      if (curr.close > curr.open && body > avgAtr * 1.25) {
         demandLow = prev.low;
         demandHigh = max(prev.open, prev.close);
       }
-
-      // Dorongan turun kuat -> area sebelum candle impulsif jadi Supply Zone
-      if (curr.close < curr.open && body > avgAtr * 1.3) {
+      if (curr.close < curr.open && body > avgAtr * 1.25) {
         supplyLow = min(prev.open, prev.close);
         supplyHigh = prev.high;
       }
     }
 
-    final nearestSupport = demandLow != null ? min(swingLow, demandLow) : swingLow;
-    final nearestResistance = supplyHigh != null ? max(swingHigh, supplyHigh) : swingHigh;
+    final nearestSupport =
+        demandLow != null ? min(swingLow, demandLow) : swingLow;
+    final nearestResistance =
+        supplyHigh != null ? max(swingHigh, supplyHigh) : swingHigh;
 
     final reasons = <String>[];
 
-    // --- PRIORITAS 1: FILTER MARKET TIDAK KONDUSIF ---
+    // 3. Filter Market Sideways atau Lonjakan Volatilitas Ekstrem
     if (adx < 20) {
-      reasons.add('ADX ${adx.toStringAsFixed(1)} (< 20): tren lemah / market sideways.');
-      return _noTrade(
+      reasons.add(
+        'ADX (Wilder) berada di ${adx.toStringAsFixed(1)} (< 20): pasar sedang sideways / tren lemah.',
+      );
+      return AnalysisResult(
+        decision: SignalDecision.noTrade,
+        decisionLabel: 'JANGAN ENTRY',
         currentPrice: currentPrice,
         ema50: ema50,
         ema200: ema200,
@@ -131,141 +233,181 @@ class AnalyzerEngine {
         atr: atr,
         nearestSupport: nearestSupport,
         nearestResistance: nearestResistance,
-        zoneInfo: 'Sideways / Tidak ada tren jelas',
+        zoneInfo: 'Sideways / Konsolidasi',
         reasons: reasons,
       );
     }
 
     if (avgAtr > 0 && atr > avgAtr * 2.2) {
       reasons.add(
-        'ATR ${atr.toStringAsFixed(2)} melonjak tajam dibanding rata-rata ${avgAtr.toStringAsFixed(2)} (rawan spike/whipsaw).',
+        'Volatilitas ekstrem terdeteksi (ATR ${atr.toStringAsFixed(2)}): risiko news/spike tinggi, hindari entry.',
       );
-      return _noTrade(
-        currentPrice: currentPrice,
-        ema50: ema50,
-        ema200: ema200,
-        adx: adx,
-        atr: atr,
-        nearestSupport: nearestSupport,
-        nearestResistance: nearestResistance,
-        zoneInfo: 'Volatilitas ekstrem',
-        reasons: reasons,
-      );
-    }
-
-    // --- PRIORITAS 2: ARAH TREN & ZONA SNR/SND ---
-    final isBullishTrend = ema50 > ema200 && currentPrice >= ema200;
-    final isBearishTrend = ema50 < ema200 && currentPrice <= ema200;
-
-    final nearDemand = demandHigh != null &&
-        demandLow != null &&
-        currentPrice >= (demandLow - atr * 0.4) &&
-        currentPrice <= (demandHigh + atr * 0.6);
-    final nearSupport = (currentPrice - nearestSupport).abs() <= atr * 0.8;
-
-    final nearSupply = supplyLow != null &&
-        supplyHigh != null &&
-        currentPrice >= (supplyLow - atr * 0.6) &&
-        currentPrice <= (supplyHigh + atr * 0.4);
-    final nearResistance = (nearestResistance - currentPrice).abs() <= atr * 0.8;
-
-    final tp1Mult = mode == TradingMode.scalping ? 1.2 : 1.5;
-    final tp2Mult = mode == TradingMode.scalping ? 2.2 : 3.5;
-
-    // --- KONDISI BUY ---
-    if (isBullishTrend && (nearDemand || nearSupport)) {
-      reasons.add('Tren naik valid: EMA 50 > EMA 200 dan harga di atas EMA 200.');
-      reasons.add('ADX (Wilder) ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.');
-      if (nearDemand) {
-        reasons.add('Harga berada di area Demand Zone SND (${demandLow!.toStringAsFixed(2)} - ${demandHigh!.toStringAsFixed(2)}).');
-      }
-      if (nearSupport) {
-        reasons.add('Harga dekat area Support SNR (${nearestSupport.toStringAsFixed(2)}).');
-      }
-
-      double sl = currentPrice - (atr * 1.5);
-      if (nearSupport && nearestSupport < currentPrice) {
-        sl = min(sl, nearestSupport - (atr * 0.3));
-      }
-
-      double tp1 = currentPrice + (atr * tp1Mult);
-      double tp2 = currentPrice + (atr * tp2Mult);
-
-      if (nearestResistance > currentPrice + (atr * 0.5)) {
-        final safeCap = nearestResistance - (atr * 0.25);
-        if (tp2 > safeCap) tp2 = max(tp1 + (atr * 0.4), safeCap);
-      }
-
       return AnalysisResult(
-        decision: SignalDecision.buy,
-        decisionLabel: 'BUY',
+        decision: SignalDecision.noTrade,
+        decisionLabel: 'JANGAN ENTRY',
         currentPrice: currentPrice,
-        entryPrice: currentPrice,
-        stopLoss: sl,
-        tp1: tp1,
-        tp2: tp2,
         ema50: ema50,
         ema200: ema200,
         adx: adx,
         atr: atr,
         nearestSupport: nearestSupport,
         nearestResistance: nearestResistance,
-        zoneInfo: nearDemand ? 'Area Demand (SND)' : 'Area Support (SNR)',
+        zoneInfo: 'Volatilitas Tinggi (High Risk)',
         reasons: reasons,
       );
     }
 
-    // --- KONDISI SELL ---
-    if (isBearishTrend && (nearSupply || nearResistance)) {
-      reasons.add('Tren turun valid: EMA 50 < EMA 200 dan harga di bawah EMA 200.');
-      reasons.add('ADX (Wilder) ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.');
-      if (nearSupply) {
-        reasons.add('Harga berada di area Supply Zone SND (${supplyLow!.toStringAsFixed(2)} - ${supplyHigh!.toStringAsFixed(2)}).');
-      }
-      if (nearResistance) {
-        reasons.add('Harga dekat area Resistance SNR (${nearestResistance.toStringAsFixed(2)}).');
-      }
+    // 4. Evaluasi Tren EMA 50/200 (mengizinkan pullback wajar ke area zona)
+    final isBullishTrend = ema50 > ema200 && currentPrice >= (ema200 - atr * 0.5);
+    final isBearishTrend = ema50 < ema200 && currentPrice <= (ema200 + atr * 0.5);
 
-      double sl = currentPrice + (atr * 1.5);
-      if (nearResistance && nearestResistance > currentPrice) {
-        sl = max(sl, nearestResistance + (atr * 0.3));
+    // 5. Pengaturan SL & TP1 (RR 1:2) berbeda antara M15 dan H1
+    final slMult = mode == TradingMode.scalping ? 1.2 : 1.6;
+
+    // --- CEK PELUANG BUY (RR 1:2) ---
+    if (isBullishTrend) {
+      final nearDemand = demandLow != null &&
+          demandHigh != null &&
+          currentPrice >= (demandLow - atr * 0.5) &&
+          currentPrice <= (demandHigh + atr * 0.8);
+      final nearSupport = (currentPrice - nearestSupport).abs() <= atr * 1.0;
+
+      if (nearDemand || nearSupport) {
+        reasons.add(
+          'Tren naik valid: EMA 50 (${ema50.toStringAsFixed(2)}) > EMA 200 (${ema200.toStringAsFixed(2)}).',
+        );
+        reasons.add(
+          'ADX (Wilder) ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.',
+        );
+        if (nearDemand) {
+          reasons.add(
+            'Harga masuk zona Demand SnD (${demandLow!.toStringAsFixed(2)} - ${demandHigh!.toStringAsFixed(2)}).',
+          );
+        }
+        if (nearSupport) {
+          reasons.add(
+            'Harga dekat area Support SNR (${nearestSupport.toStringAsFixed(2)}).',
+          );
+        }
+
+        double sl = currentPrice - (atr * slMult);
+        if (nearSupport &&
+            nearestSupport < currentPrice &&
+            (currentPrice - nearestSupport) <= atr * 1.3) {
+          sl = min(sl, nearestSupport - (atr * 0.3));
+        }
+
+        final slDistance = (currentPrice - sl).abs();
+        final tp1 = currentPrice + (slDistance * 2.0); // RR 1:2
+        double tp2 = currentPrice + (slDistance * 3.0); // Ekstensi RR 1:3
+
+        if (nearestResistance > tp1 && tp2 > nearestResistance) {
+          tp2 = nearestResistance - (atr * 0.15);
+        }
+
+        reasons.add(
+          'Target utama dikunci pada RR 1:2 (Risiko ${slDistance.toStringAsFixed(2)} poin, Target ${(slDistance * 2.0).toStringAsFixed(2)} poin).',
+        );
+
+        return AnalysisResult(
+          decision: SignalDecision.buy,
+          decisionLabel: 'BUY',
+          currentPrice: currentPrice,
+          entryPrice: currentPrice,
+          stopLoss: sl,
+          tp1: tp1,
+          tp2: tp2,
+          ema50: ema50,
+          ema200: ema200,
+          adx: adx,
+          atr: atr,
+          nearestSupport: nearestSupport,
+          nearestResistance: nearestResistance,
+          zoneInfo: nearDemand ? 'Area Demand (SnD)' : 'Area Support (SNR)',
+          reasons: reasons,
+        );
       }
-
-      double tp1 = currentPrice - (atr * tp1Mult);
-      double tp2 = currentPrice - (atr * tp2Mult);
-
-      if (nearestSupport < currentPrice - (atr * 0.5)) {
-        final safeFloor = nearestSupport + (atr * 0.25);
-        if (tp2 < safeFloor) tp2 = min(tp1 - (atr * 0.4), safeFloor);
-      }
-
-      return AnalysisResult(
-        decision: SignalDecision.sell,
-        decisionLabel: 'SELL',
-        currentPrice: currentPrice,
-        entryPrice: currentPrice,
-        stopLoss: sl,
-        tp1: tp1,
-        tp2: tp2,
-        ema50: ema50,
-        ema200: ema200,
-        adx: adx,
-        atr: atr,
-        nearestSupport: nearestSupport,
-        nearestResistance: nearestResistance,
-        zoneInfo: nearSupply ? 'Area Supply (SND)' : 'Area Resistance (SNR)',
-        reasons: reasons,
-      );
     }
 
-    // --- BELUM ADA KONFIRMASI ZONA & TREN ---
+    // --- CEK PELUANG SELL (RR 1:2) ---
+    if (isBearishTrend) {
+      final nearSupply = supplyLow != null &&
+          supplyHigh != null &&
+          currentPrice >= (supplyLow - atr * 0.8) &&
+          currentPrice <= (supplyHigh + atr * 0.5);
+      final nearResistance =
+          (nearestResistance - currentPrice).abs() <= atr * 1.0;
+
+      if (nearSupply || nearResistance) {
+        reasons.add(
+          'Tren turun valid: EMA 50 (${ema50.toStringAsFixed(2)}) < EMA 200 (${ema200.toStringAsFixed(2)}).',
+        );
+        reasons.add(
+          'ADX (Wilder) ${adx.toStringAsFixed(1)} menunjukkan kekuatan tren memadai.',
+        );
+        if (nearSupply) {
+          reasons.add(
+            'Harga masuk zona Supply SnD (${supplyLow!.toStringAsFixed(2)} - ${supplyHigh!.toStringAsFixed(2)}).',
+          );
+        }
+        if (nearResistance) {
+          reasons.add(
+            'Harga dekat area Resistance SNR (${nearestResistance.toStringAsFixed(2)}).',
+          );
+        }
+
+        double sl = currentPrice + (atr * slMult);
+        if (nearResistance &&
+            nearestResistance > currentPrice &&
+            (nearestResistance - currentPrice) <= atr * 1.3) {
+          sl = max(sl, nearestResistance + (atr * 0.3));
+        }
+
+        final slDistance = (sl - currentPrice).abs();
+        final tp1 = currentPrice - (slDistance * 2.0); // RR 1:2
+        double tp2 = currentPrice - (slDistance * 3.0); // Ekstensi RR 1:3
+
+        if (nearestSupport < tp1 && tp2 < nearestSupport) {
+          tp2 = nearestSupport + (atr * 0.15);
+        }
+
+        reasons.add(
+          'Target utama dikunci pada RR 1:2 (Risiko ${slDistance.toStringAsFixed(2)} poin, Target ${(slDistance * 2.0).toStringAsFixed(2)} poin).',
+        );
+
+        return AnalysisResult(
+          decision: SignalDecision.sell,
+          decisionLabel: 'SELL',
+          currentPrice: currentPrice,
+          entryPrice: currentPrice,
+          stopLoss: sl,
+          tp1: tp1,
+          tp2: tp2,
+          ema50: ema50,
+          ema200: ema200,
+          adx: adx,
+          atr: atr,
+          nearestSupport: nearestSupport,
+          nearestResistance: nearestResistance,
+          zoneInfo: nearSupply ? 'Area Supply (SnD)' : 'Area Resistance (SNR)',
+          reasons: reasons,
+        );
+      }
+    }
+
     if (!isBullishTrend && !isBearishTrend) {
-      reasons.add('Posisi EMA 50, EMA 200, dan harga belum selaras untuk tren kuat.');
+      reasons.add(
+        'Posisi EMA 50, EMA 200, dan harga belum selaras untuk tren kuat.',
+      );
     } else {
-      reasons.add('Harga belum menyentuh zona Support/Demand atau Resistance/Supply yang valid (posisi nanggung).');
+      reasons.add(
+        'Tren EMA & ADX valid, namun harga belum masuk area Support/Demand atau Resistance/Supply.',
+      );
     }
 
-    return _noTrade(
+    return AnalysisResult(
+      decision: SignalDecision.noTrade,
+      decisionLabel: 'JANGAN ENTRY',
       currentPrice: currentPrice,
       ema50: ema50,
       ema200: ema200,
@@ -276,138 +418,5 @@ class AnalyzerEngine {
       zoneInfo: 'Menunggu zona valid / tren selaras',
       reasons: reasons,
     );
-  }
-
-  static AnalysisResult _noTrade({
-    required double currentPrice,
-    required double ema50,
-    required double ema200,
-    required double adx,
-    required double atr,
-    required double nearestSupport,
-    required double nearestResistance,
-    required String zoneInfo,
-    required List<String> reasons,
-  }) {
-    return AnalysisResult(
-      decision: SignalDecision.noTrade,
-      decisionLabel: 'JANGAN ENTRY',
-      currentPrice: currentPrice,
-      entryPrice: null,
-      stopLoss: null,
-      tp1: null,
-      tp2: null,
-      ema50: ema50,
-      ema200: ema200,
-      adx: adx,
-      atr: atr,
-      nearestSupport: nearestSupport,
-      nearestResistance: nearestResistance,
-      zoneInfo: zoneInfo,
-      reasons: reasons,
-    );
-  }
-
-  static double _calculateEma(List<double> values, int period) {
-    if (values.isEmpty) return 0;
-    final k = 2.0 / (period + 1);
-    double ema = values.first;
-    for (int i = 1; i < values.length; i++) {
-      ema = (values[i] * k) + (ema * (1 - k));
-    }
-    return ema;
-  }
-
-  static List<double> _calculateAtrSeries(List<Candle> candles, int period) {
-    if (candles.length < 2) return [];
-    final trList = <double>[];
-    for (int i = 1; i < candles.length; i++) {
-      final curr = candles[i];
-      final prevClose = candles[i - 1].close;
-      final tr = max(
-        curr.high - curr.low,
-        max((curr.high - prevClose).abs(), (curr.low - prevClose).abs()),
-      );
-      trList.add(tr);
-    }
-
-    final atrList = <double>[];
-    double sum = 0;
-    for (int i = 0; i < trList.length; i++) {
-      if (i < period) {
-        sum += trList[i];
-        if (i == period - 1) atrList.add(sum / period);
-      } else {
-        final nextAtr = ((atrList.last * (period - 1)) + trList[i]) / period;
-        atrList.add(nextAtr);
-      }
-    }
-    return atrList;
-  }
-
-  // Perhitungan ADX gaya Wilder (lebih selaras dengan ADX MT5)
-  static double _calculateAdxWilder(List<Candle> candles, int period) {
-    if (candles.length < (period * 2) + 1) return 25.0;
-
-    final trList = <double>[];
-    final plusDmList = <double>[];
-    final minusDmList = <double>[];
-
-    for (int i = 1; i < candles.length; i++) {
-      final curr = candles[i];
-      final prev = candles[i - 1];
-
-      final upMove = curr.high - prev.high;
-      final downMove = prev.low - curr.low;
-
-      final plusDm = (upMove > downMove && upMove > 0) ? upMove : 0.0;
-      final minusDm = (downMove > upMove && downMove > 0) ? downMove : 0.0;
-
-      final tr = max(
-        curr.high - curr.low,
-        max((curr.high - prev.close).abs(), (curr.low - prev.close).abs()),
-      );
-
-      trList.add(tr);
-      plusDmList.add(plusDm);
-      minusDmList.add(minusDm);
-    }
-
-    // Smoothing awal (jumlah `period` pertama ala Wilder)
-    double smoothTr = trList.sublist(0, period).reduce((a, b) => a + b);
-    double smoothPlusDm = plusDmList.sublist(0, period).reduce((a, b) => a + b);
-    double smoothMinusDm = minusDmList.sublist(0, period).reduce((a, b) => a + b);
-
-    final dxList = <double>[];
-
-    double calcDx(double tr, double pDm, double mDm) {
-      if (tr <= 0) return 0.0;
-      final plusDi = 100.0 * (pDm / tr);
-      final minusDi = 100.0 * (mDm / tr);
-      final sumDi = plusDi + minusDi;
-      if (sumDi <= 0) return 0.0;
-      return 100.0 * ((plusDi - minusDi).abs() / sumDi);
-    }
-
-    dxList.add(calcDx(smoothTr, smoothPlusDm, smoothMinusDm));
-
-    for (int i = period; i < trList.length; i++) {
-      smoothTr = smoothTr - (smoothTr / period) + trList[i];
-      smoothPlusDm = smoothPlusDm - (smoothPlusDm / period) + plusDmList[i];
-      smoothMinusDm = smoothMinusDm - (smoothMinusDm / period) + minusDmList[i];
-      dxList.add(calcDx(smoothTr, smoothPlusDm, smoothMinusDm));
-    }
-
-    if (dxList.length < period) {
-      return dxList.reduce((a, b) => a + b) / dxList.length;
-    }
-
-    // ADX awal = rata-rata `period` nilai DX pertama, lalu di-smoothing Wilder
-    double adx = dxList.sublist(0, period).reduce((a, b) => a + b) / period;
-    for (int i = period; i < dxList.length; i++) {
-      adx = ((adx * (period - 1)) + dxList[i]) / period;
-    }
-
-    return adx;
   }
 }
