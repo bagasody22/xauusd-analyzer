@@ -104,7 +104,8 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
         .map((item) => Candle.fromJson(item as Map<String, dynamic>))
         .toList();
   }
-    List<Candle> _chronologicalCandles(List<Candle> raw) {
+
+  List<Candle> _chronologicalCandles(List<Candle> raw) {
     if (raw.length < 2) return raw;
     return raw.reversed.toList();
   }
@@ -201,56 +202,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
     return adx;
   }
 
-  List<String> _buildScalpReasons(ScalpResult res) {
-    final ema50 = _lastScalpEma50 ?? 0;
-    final ema200 = _lastScalpEma200 ?? 0;
-    final adx = _lastScalpAdx ?? 0;
-    final atr = _lastScalpAtr ?? 0;
-    final price = res.currentPrice;
-
-    final list = <String>[res.reason];
-
-    if (ema50 > ema200) {
-      list.add(
-        'Struktur EMA jangka pendek bullish: EMA 50 (${ema50.toStringAsFixed(2)}) > EMA 200 (${ema200.toStringAsFixed(2)}).',
-      );
-    } else if (ema50 < ema200) {
-      list.add(
-        'Struktur EMA jangka pendek bearish: EMA 50 (${ema50.toStringAsFixed(2)}) < EMA 200 (${ema200.toStringAsFixed(2)}).',
-      );
-    } else {
-      list.add('EMA 50 dan EMA 200 berada di level yang berdekatan.');
-    }
-
-    if (price > ema50) {
-      list.add('Harga (${price.toStringAsFixed(2)}) berada di atas EMA 50.');
-    } else if (price < ema50) {
-      list.add('Harga (${price.toStringAsFixed(2)}) berada di bawah EMA 50.');
-    }
-
-    if (adx >= 25.0) {
-      list.add(
-        'ADX (Wilder) ${adx.toStringAsFixed(1)} (>= 25.0): momentum tren cukup kuat.',
-      );
-    } else {
-      list.add(
-        'ADX (Wilder) ${adx.toStringAsFixed(1)} (< 25.0): momentum tren belum mencapai batas minimal 25.0.',
-      );
-    }
-
-    if (res.signal != ScalpSignal.noEntry &&
-        res.stopLoss != null &&
-        res.takeProfit != null) {
-      final slDist = (price - res.stopLoss!).abs().toStringAsFixed(2);
-      final tpDist = (res.takeProfit! - price).abs().toStringAsFixed(2);
-      list.add(
-        'Risiko SL $slDist poin dengan target TP $tpDist poin (rasio RR 1:2, ATR ${atr.toStringAsFixed(2)}).',
-      );
-    }
-
-    return list;
-  }
-    Future<void> _runAnalysis() async {
+  Future<void> _runAnalysis() async {
     final apiKey = _apiKeyController.text.trim();
     if (apiKey.isEmpty) {
       setState(() {
@@ -274,7 +226,6 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
         final ordered = _chronologicalCandles(rawCandles);
         final closes = ordered.map((c) => c.close).toList();
 
-        final currentPrice = ordered.last.close;
         final ema50 = _calculateEma(closes, 50);
         final ema200 = _calculateEma(closes, 200);
         final adx = _calculateAdxWilder(ordered, period: 14);
@@ -282,7 +233,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
 
         final scalpEval = ShortTermAnalyzer.evaluate(
           timeframe: scalpTf,
-          currentPrice: currentPrice,
+          candles: ordered,
           ema50: ema50,
           ema200: ema200,
           adx: adx,
@@ -328,8 +279,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
       });
     }
   }
-
-  void _copyValue(String label, double value) {
+    void _copyValue(String label, double value) {
     final formatted = value.toStringAsFixed(2);
     Clipboard.setData(ClipboardData(text: formatted));
     ScaffoldMessenger.of(context).showSnackBar(
@@ -417,7 +367,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'Pilih Gaya Trading',
+                      'Pilih Gaya Trading (Semua RR 1:2)',
                       style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                     ),
                     const SizedBox(height: 8),
@@ -425,7 +375,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                       children: [
                         Expanded(
                           child: ChoiceChip(
-                            label: const Center(child: Text('Scalping (15m)')),
+                            label: const Center(child: Text('M15 (RR 1:2)')),
                             selected: _selectedScalpTf == null &&
                                 _selectedMode == TradingMode.scalping,
                             selectedColor: const Color(0xFFF5B82E),
@@ -447,7 +397,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: ChoiceChip(
-                            label: const Center(child: Text('Hold (1H)')),
+                            label: const Center(child: Text('H1 (RR 1:2)')),
                             selected: _selectedScalpTf == null &&
                                 _selectedMode == TradingMode.hold,
                             selectedColor: const Color(0xFFF5B82E),
@@ -574,7 +524,8 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                   child: Column(
                     children: [
                       Text(
-                        'Update: $_lastUpdated • Jangka Pendek ${_scalpResult!.timeframe.name.toUpperCase()} (Target RR 1:2)',
+                        'Update: $_lastUpdated • ${_scalpResult!.timeframe.name.toUpperCase()} (RR 1:2) • ${_scalpResult!.zoneInfo}',
+                        textAlign: TextAlign.center,
                         style: const TextStyle(color: Colors.white70, fontSize: 12),
                       ),
                       const SizedBox(height: 8),
@@ -599,12 +550,6 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                         _priceTile('Stop Loss (SL)', _scalpResult!.stopLoss!),
                         _priceTile('Take Profit (TP — RR 1:2)', _scalpResult!.takeProfit!),
                       ],
-                      const SizedBox(height: 12),
-                      Text(
-                        _scalpResult!.reason,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white70, height: 1.35),
-                      ),
                     ],
                   ),
                 ),
@@ -623,7 +568,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                       ),
                       const SizedBox(height: 8),
-                      ..._buildScalpReasons(_scalpResult!).map(
+                      ..._scalpResult!.reasons.map(
                         (r) => Padding(
                           padding: const EdgeInsets.only(bottom: 6),
                           child: Row(
@@ -639,10 +584,16 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                       ),
                       const Divider(height: 24),
                       const Text(
-                        'Data Teknis (EMA / ADX / ATR)',
+                        'Data Teknis Jarak Dekat (SNR / SnD / Tren)',
                         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                       ),
                       const SizedBox(height: 8),
+                      Text(
+                        '• Support / Demand Terdekat: ${_scalpResult!.nearestSupport.toStringAsFixed(2)}',
+                      ),
+                      Text(
+                        '• Resistance / Supply Terdekat: ${_scalpResult!.nearestResistance.toStringAsFixed(2)}',
+                      ),
                       Text(
                         '• EMA 50: ${(_lastScalpEma50 ?? 0).toStringAsFixed(2)} | EMA 200: ${(_lastScalpEma200 ?? 0).toStringAsFixed(2)}',
                       ),
@@ -670,7 +621,8 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                   child: Column(
                     children: [
                       Text(
-                        'Update: $_lastUpdated • Zona: ${_result!.zoneInfo}',
+                        'Update: $_lastUpdated • ${_selectedMode == TradingMode.scalping ? "M15" : "H1"} (RR 1:2) • ${_result!.zoneInfo}',
+                        textAlign: TextAlign.center,
                         style: const TextStyle(color: Colors.white70, fontSize: 12),
                       ),
                       const SizedBox(height: 8),
@@ -691,8 +643,8 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                         const Divider(height: 24),
                         _priceTile('Entry', _result!.entryPrice!),
                         _priceTile('Stop Loss (SL)', _result!.stopLoss!),
-                        _priceTile('Take Profit 1 (TP1)', _result!.tp1!),
-                        _priceTile('Take Profit 2 (TP2)', _result!.tp2!),
+                        _priceTile('Take Profit 1 (TP1 — RR 1:2)', _result!.tp1!),
+                        _priceTile('Take Profit 2 (TP2 — RR 1:3)', _result!.tp2!),
                       ],
                     ],
                   ),
@@ -728,7 +680,7 @@ class _AnalyzerHomePageState extends State<AnalyzerHomePage> {
                       ),
                       const Divider(height: 24),
                       const Text(
-                        'Data Teknis (SNR / SND / Tren)',
+                        'Data Teknis (SNR / SnD / Tren)',
                         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                       ),
                       const SizedBox(height: 8),
